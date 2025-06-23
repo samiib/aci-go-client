@@ -22,7 +22,7 @@ type SubjectFilter struct {
 type SubjectFilterAttributes struct {
 	Annotation       string `json:",omitempty"`
 	Action           string `json:",omitempty"`
-	Directives       string `json:",omitempty"`
+	Directives       string `json`
 	PriorityOverride string `json:",omitempty"`
 	TDn              string `json:",omitempty"`
 	TnVzFilterName   string `json:",omitempty"`
