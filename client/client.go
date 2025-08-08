@@ -74,6 +74,7 @@ type Client struct {
 	backoffMinDelay    int
 	backoffMaxDelay    int
 	backoffDelayFactor float64
+	maxReAuthRetries   int
 	*ServiceManager
 }
 
@@ -198,6 +199,7 @@ func initClient(clientUrl, username string, options ...Option) *Client {
 		BaseURL:  bUrl,
 		username: username,
 		MOURL:    DefaultMOURL,
+		maxReAuthRetries: 3,
 	}
 
 	for _, option := range options {
@@ -520,6 +522,7 @@ func (c *Client) do(req *http.Request, skipLoggingPayload bool) (*container.Cont
 		body, _ = ioutil.ReadAll(req.Body)
 	}
 
+	reAuthCounter := 1
 	for attempts := 0; ; attempts++ {
 		log.Printf("[TRACE] HTTP Request Method and URL: %s %s", req.Method, req.URL.String())
 		if c.maxRetries != 0 {
@@ -552,6 +555,34 @@ func (c *Client) do(req *http.Request, skipLoggingPayload bool) (*container.Cont
 		resp.Body.Close()
 		if !skipLoggingPayload {
 			log.Printf("[DEBUG] HTTP response unique string %s %s %s", req.Method, req.URL.String(), bodyStr)
+		}
+
+		// Handle session timeout for login based requests
+		if (resp.StatusCode == 401 || resp.StatusCode == 403) {
+			obj, err := container.ParseJSON(bodyBytes)
+			if err != nil {
+				log.Printf("[DEBUG] Authorization error with status code %d", resp.StatusCode)
+			} else {
+				errorMessage := obj.S("error").String()
+				log.Printf("[DEBUG] Authorization error with status code %d: %+v", resp.StatusCode, errorMessage)
+			}
+			log.Printf("[DEBUG] Checking max re-authentication retries: %v on %v", reAuthCounter, c.maxReAuthRetries)
+			if reAuthCounter < c.maxReAuthRetries {
+				log.Printf("[DEBUG] Retrying authentication after %d error", resp.StatusCode)
+				c.AuthToken = nil
+				req, err = c.InjectAuthenticationHeader(req, "")
+				if err == nil {
+					reAuthCounter = reAuthCounter + 1
+					// If re-authentication is successful, not counting previous query as an attempt
+					attempts = attempts - 1
+					log.Printf("[DEBUG] Retrying same request after status %d and re-authentication", resp.StatusCode)
+					continue
+				} else {
+					log.Printf("[ERROR] Error when retrying authentication after %d error: %v", resp.StatusCode, err)
+				}
+			} else {
+				log.Printf("[ERROR] Not retrying authentication after %d error due to maximum re-authentication retries reached", resp.StatusCode)
+			}
 		}
 
 		if (resp.StatusCode < 500 || resp.StatusCode > 504) && resp.StatusCode != 405 && !isApicNotFound(resp.StatusCode, bodyStr, resp.Header) {
@@ -606,6 +637,7 @@ func (c *Client) doRaw(req *http.Request, skipLoggingPayload bool) (*http.Respon
 		body, _ = ioutil.ReadAll(req.Body)
 	}
 
+	reAuthCounter := 1
 	for attempts := 0; ; attempts++ {
 		log.Printf("[TRACE] HTTP Request Method and URL: %s %s", req.Method, req.URL.String())
 		if c.maxRetries != 0 {
@@ -631,6 +663,28 @@ func (c *Client) doRaw(req *http.Request, skipLoggingPayload bool) (*http.Respon
 			log.Printf("[TRACE] HTTP Response: %d %s %v", resp.StatusCode, resp.Status, resp)
 		} else {
 			log.Printf("[TRACE] HTTP Response: %d %s", resp.StatusCode, resp.Status)
+		}
+
+		// Handle session timeout for login based requests
+		if (resp.StatusCode == 401 || resp.StatusCode == 403) {
+			log.Printf("[DEBUG] Authorization error with status code %d", resp.StatusCode)
+			log.Printf("[DEBUG] Checking max re-authentication retries: %v on %v", reAuthCounter, c.maxReAuthRetries)
+			if reAuthCounter < c.maxReAuthRetries {
+				log.Printf("[DEBUG] Retrying authentication after %d error", resp.StatusCode)
+				c.AuthToken = nil
+				req, err = c.InjectAuthenticationHeader(req, "")
+				if err == nil {
+					reAuthCounter = reAuthCounter + 1
+					// If re-authentication is successful, not counting previous query as an attempt
+					attempts = attempts - 1
+					log.Printf("[DEBUG] Retrying same request after status %d and re-authentication", resp.StatusCode)
+					continue
+				} else {
+					log.Printf("[ERROR] Error when retrying authentication after %d error: %v", resp.StatusCode, err)
+				}
+			} else {
+				log.Printf("[ERROR] Not retrying authentication after %d error due to maximum re-authentication retries reached", resp.StatusCode)
+			}
 		}
 
 		if (resp.StatusCode < 500 || resp.StatusCode > 504) && resp.StatusCode != 405 {
